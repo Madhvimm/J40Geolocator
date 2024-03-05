@@ -291,8 +291,8 @@ find_matched_cities <- function(city, state) {
   # Select the desired columns
   combined_data <- combined_data %>%
     dplyr::select(City, State, Total_Population, Median_Income, Unemployment_Rate, Median_Age,
-                  `Total no  of census tracts`, `Total no  of disadvantaged tracts`, 
-                  `Percentage of disadvantaged population`)
+                  `Total_no_of_census_tracts`, `Total_no_of_disadvantaged_tracts`, 
+                  `Percentage_of_disadvantaged_population`)
   
   
   return(combined_data)
@@ -393,7 +393,7 @@ get_input_type <- function(trimmed_location, state) {
 
 get_input_batch <- function(location, state) {
   # Initialize the return value
-  input_type <- NULL
+  input_type <- "not found"
   
   # Ensure that location is a single value
   if (length(location) != 1) {
@@ -402,29 +402,29 @@ get_input_batch <- function(location, state) {
   
   # Ensure that location is not NULL or an empty string
   if (!is.null(location) && nzchar(location)) {
-    
     # Remove common suffixes
     location <- gsub(" city| town| village$", "", location, ignore.case = TRUE)
     
-    # 1. Checking for State input
+    # Checking for State input
     state_match <- usa_data %>%
       dplyr::filter(tolower(`State/Territory`) == tolower(location))
     if (nrow(state_match) > 0) {
       input_type <- "state"
     } 
     
-    # 2. Checking for City input
-    if (is.null(input_type)) {
+    # Checking for City input if not matched with state
+    if (input_type == "not found") {
       city_match <- places(state = state, year = 2020) %>%
         dplyr::filter(NAME == location)
       if (nrow(city_match) > 0) {
         input_type <- "city"
       }
     }
-    }
+  }
   
   return(input_type)
 }
+
 
 
 
@@ -1193,11 +1193,14 @@ server <- function(input, output,session) {
     datatable(uploaded_data(), options = list(pageLength = 5))
   })  # End of renderDT for uploadedDataPreview
   
+  
   observeEvent(input$processData, {
     req(uploaded_data())
     
     data <- uploaded_data()
+    
     print("PRINT HEAD OF DATA")
+    
     print(head(data)) #FOR DEBUGGING
     
     has_relevant_data <<- FALSE
@@ -1207,52 +1210,53 @@ server <- function(input, output,session) {
         rowwise() %>%
         mutate(
           input_type = get_input_batch(Location, State),
-          result = switch(input_type,
-                   "city" = {
-                     cat("Checking for City...\n")
-                     print("PRINTING Location")
-                     print(Location)
-                     
-                     city_boundary <- places(state = State, year = 2020) %>% 
-                       dplyr::filter(NAME == Location) %>% 
-                       st_transform(crs = 4269)
-                     print("CITY BOUNDARY")
-                     print(city_boundary)
-                     state_tracts <- tracts(state = State, year = 2020) %>% 
-                       st_transform(crs = 4269)
-                     
-                     if (nrow(city_boundary) == 0 | nrow(state_tracts) == 0) {
-                       cat("No tracts or city boundary found\n")
-                       "No tracts or city boundary found"
-                     } else {
-                       city_tracts <- st_intersection(state_tracts, city_boundary)
-                     
-                       if (is.null(city_tracts) || nrow(city_tracts) == 0) {
-                         cat("No tracts selected for the city\n")
-                         "No tracts selected for the city"
-                       } else {
-                         print(head(city_tracts$GEOID))
-                         
-                         selected_city_data <- usa_data %>%
-                           dplyr::filter(`Census tract 2010 ID` %in% city_tracts$GEOID)
-                         
-                         print("SELECTED CITY DATA")
-                         print(selected_city_data)
-                         
-                         if (nrow(selected_city_data) > 0) {
-                           result_data(selected_city_data)
-                           has_relevant_data <<- TRUE
-                         }
-                         
-                         "Processed City"
-                       }
-                     }
-                   }
-                   ,
-                   as.character(NA)
+          result = if_else(
+            input_type == "city",
+            {
+              city_process_result <- "City not processed yet"  # Default message
+              cat("Checking for City...\n")
+              print("PRINTING Location")
+              print(Location)
+              
+              city_boundary <- places(state = State, year = 2020) %>%
+                dplyr::filter(NAME == Location) %>%
+                st_transform(crs = 4269)
+              print("CITY BOUNDARY")
+              print(city_boundary)
+              state_tracts <- tracts(state = State, year = 2020) %>%
+                st_transform(crs = 4269)
+              
+              if (nrow(city_boundary) == 0 | nrow(state_tracts) == 0) {
+                cat("No tracts or city boundary found\n")
+                city_process_result <- "No tracts or city boundary found"
+              } else {
+                city_tracts <- st_intersection(state_tracts, city_boundary)
+                
+                if (is.null(city_tracts) || nrow(city_tracts) == 0) {
+                  cat("No tracts selected for the city\n")
+                  city_process_result <- "No tracts selected for the city"
+                } else {
+                  print(head(city_tracts$GEOID))
+                  
+                  selected_city_data <- usa_data %>%
+                    dplyr::filter(`Census tract 2010 ID` %in% city_tracts$GEOID)
+                  
+                  print("SELECTED CITY DATA")
+                  print(selected_city_data)
+                  
+                  if (nrow(selected_city_data) > 0) {
+                    has_relevant_data <<- TRUE
+                    city_process_result <- "Processed City"
+                  }
+                }
+              }
+              city_process_result  # Return the result of city processing
+            },
+            "City couldn't be found, try using the Geolocator Tool"  # For non-city inputs
           )
         ) %>%
         ungroup()
+      
       print("COL NAME OF CITY ")
       print(colnames(city_df))
       
@@ -1262,13 +1266,13 @@ server <- function(input, output,session) {
           left_join(
             city_df %>%
               mutate(City = str_trim(str_replace(City, regex("\\s*city$", ignore_case = TRUE), ""))) %>%
-              select(City, State, `Total.no..of.census.tracts`, `Total.no..of.disadvantaged.tracts`, `Percentage.of.disadvantaged.population`), 
+              select(City, State, `Total_no_of_census_tracts`, `Total_no_of_disadvantaged_tracts`, `Percentage_of_disadvantaged_population`), 
             by = c("Location" = "City", "State" = "State")
           ) %>%
           select(-result) # Exclude the 'result' column
       }
       
-      print("PRINTING PROCESSSEDDDDDDDDDDD")
+      print("PRINTING PROCESSED DATA")
       print(processed_data)
       # Save the processed data
       processed_data(processed_data)
@@ -1299,8 +1303,8 @@ server <- function(input, output,session) {
       write.csv(processed_data(), file, row.names = FALSE)
     }  # End of content function
   )  # End of downloadHandler for downloadBatchResults
-
-    ###########################################################FOR 3 rd TAB CLOSE
+  
+  ###########################################################FOR 3 rd TAB CLOSE
   
   
   
